@@ -16,21 +16,21 @@ import (
 	"time"
 )
 
-type hashStore struct {
-	hashedPasswordsMutex   sync.Mutex
-	hashedPasswordsCounter int
-	hashedPasswords        map[int]string
-
-	hashRequestProcessingDurationsMutex sync.Mutex
-	hashRequestProcessingDurations      []int64
-}
-
 const (
 	hashDelayIntervalSeconds = 5
 	gracefulShutdownTimeout  = 30
 	httpBadRequest           = 400
 	defaultServerListenAddr  = ":8080"
 )
+
+type hashStore struct {
+	hashedDataMutex   sync.Mutex
+	hashedDataCounter int
+	hashedData        map[int]string
+
+	hashRequestProcessingDurationsMutex sync.Mutex
+	hashRequestProcessingDurations      []int64
+}
 
 var gracefulShutdownRequestChan = make(chan bool, 1)
 
@@ -44,8 +44,8 @@ func main() {
 	serverShutdownComplete := make(chan bool, 1)
 
 	hashStore := hashStore{
-		hashedPasswordsCounter: 0,
-		hashedPasswords: make(map[int]string),
+		hashedDataCounter:              0,
+		hashedData:                     make(map[int]string),
 		hashRequestProcessingDurations: make([]int64, 0, 100),
 	}
 	server := initHashServer(logger, &hashStore, listenAddr)
@@ -83,13 +83,17 @@ func (hs *hashStore) hash(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				http.Error(w, "Invalid hash id.", httpBadRequest)
 			} else {
-				hs.hashedPasswordsMutex.Lock()
-				if id <= hs.hashedPasswordsCounter && id >= 1 {
-					fmt.Fprintf(w, hs.hashedPasswords[id])
+				hs.hashedDataMutex.Lock()
+				if id <= hs.hashedDataCounter && id >= 1 {
+					if val, ok := hs.hashedData[id]; ok {
+						fmt.Fprintf(w, val)
+					} else {
+						http.Error(w, "Hash not generated yet.", httpBadRequest)
+					}
 				} else {
 					http.Error(w, "Index out of range.", httpBadRequest)
 				}
-				hs.hashedPasswordsMutex.Unlock()
+				hs.hashedDataMutex.Unlock()
 			}
 
 			return
@@ -101,28 +105,32 @@ func (hs *hashStore) hash(w http.ResponseWriter, r *http.Request) {
 
 	defer hs.storeHashRequestProcessingDuration(time.Now())
 
-	r.ParseForm()
+	err := r.ParseForm()
+	if err != nil {
+		log.Printf("unable to parse form: %v", err)
+		return
+	}
 
 	password := []byte(r.Form.Get("password"))
-	hs.hashedPasswordsMutex.Lock()
-	hs.hashedPasswordsCounter += 1
-	hashId := hs.hashedPasswordsCounter
+	hs.hashedDataMutex.Lock()
+	hs.hashedDataCounter += 1
+	hashId := hs.hashedDataCounter
 	hashFunc := hs.hashAndEncode(password, hashId)
-	hs.hashedPasswordsMutex.Unlock()
-	time.AfterFunc(hashDelayIntervalSeconds * time.Second, hashFunc)
+	hs.hashedDataMutex.Unlock()
+	time.AfterFunc(hashDelayIntervalSeconds*time.Second, hashFunc)
 
 	fmt.Fprintf(w, "%v", hashId)
 }
 
-func (hs *hashStore) hashAndEncode(password []byte, hashId int) func() {
+func (hs *hashStore) hashAndEncode(data []byte, hashId int) func() {
 	return func() {
 		h := sha256.New()
-		h.Write(password)
+		h.Write(data)
 		hash := h.Sum(nil)
 
-		hs.hashedPasswordsMutex.Lock()
-		hs.hashedPasswords[hashId] = base64.StdEncoding.EncodeToString(hash)
-		hs.hashedPasswordsMutex.Unlock()
+		hs.hashedDataMutex.Lock()
+		hs.hashedData[hashId] = base64.StdEncoding.EncodeToString(hash)
+		hs.hashedDataMutex.Unlock()
 	}
 }
 
@@ -175,4 +183,3 @@ func gracefulShutdown(server *http.Server, logger *log.Logger, gracefulShutdownR
 func shutdown(w http.ResponseWriter, r *http.Request) {
 	close(gracefulShutdownRequestChan)
 }
-
