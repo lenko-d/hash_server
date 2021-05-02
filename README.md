@@ -57,7 +57,7 @@ make test
 
 ```
 Submit data to be hashed:
-curl --data "password=angryMonkey"   http://localhost:8080/hash
+curl --data "password=testPassword"   http://localhost:8080/hash
 the above returns <hash-id> that can be used to retrieve the hash.
 
 Get the hashed data:
